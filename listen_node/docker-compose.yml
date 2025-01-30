@@ -1,0 +1,22 @@
+version: "3.8"
+
+services:
+  speechtotext:
+    image: naren200/whisper-live:v1
+    container_name: speechtotext
+    devices:
+      - /dev/snd:/dev/snd
+    environment:
+      - DISPLAY=$DISPLAY
+      - AUDIO_GID=${AUDIO_GID}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    runtime: nvidia 
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+

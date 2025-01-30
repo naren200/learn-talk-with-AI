@@ -1,0 +1,17 @@
+version: "3.8"
+
+services:
+  ollama:
+    image: naren200/ollama-live:v1
+    container_name: ollama
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./:/app/
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
