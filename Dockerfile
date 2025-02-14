@@ -45,6 +45,9 @@ RUN cmake -B build \
 # Stage 2: Runtime environment
 FROM ros:iron-ros-base
 
+# Setup ROS2 environment
+RUN echo "source /opt/ros/iron/setup.bash" >> /root/.bashrc
+
 # Install ALL dependencies in one layer
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
