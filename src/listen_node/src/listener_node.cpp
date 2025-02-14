@@ -22,9 +22,17 @@ private:
     }
 
     void processWhisperStream() {
+        const char* model_env = std::getenv("MODEL");
+        if (!model_env) {
+            RCLCPP_ERROR(this->get_logger(), "MODEL environment variable not set");
+            return;
+        }
+    
+        std::string model_name = model_env ? model_env : "base.en";
+
         std::string cmd = "stdbuf -oL /usr/local/src/whisper.cpp/build/bin/whisper-stream -m " + 
                          std::string("/usr/local/src/whisper.cpp/models/") + 
-                         std::string(std::getenv("MODEL")) + " --capture 2";
+                         std::string(model_env) + " --capture 2";
 
         whisper_pipe_ = popen(cmd.c_str(), "r");
         if (!whisper_pipe_) {

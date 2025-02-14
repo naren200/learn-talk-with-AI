@@ -33,6 +33,7 @@ echo "Developer mode status: $DEVELOPER"
 
 
 export CAPTURE_DEVICE=${CAPTURE_DEVICE:-2}
+export MODEL="ggml-small.en.bin"
 
 docker compose -f docker-compose.yml up -d talk_with_ai --remove-orphans
 
