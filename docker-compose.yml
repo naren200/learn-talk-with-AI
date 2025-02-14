@@ -7,9 +7,9 @@ services:
     devices:
       - /dev/snd:/dev/snd
     volumes:
-      - ./listen_node/:/root/ros2_ws/src/listen_node/
-      - ./speak_node/:/root/ros2_ws/src/speak_node/
-      - ./think_node/:/root/ros2_ws/src/think_node/
+      - ./src/:/root/ros2_ws/src/
+      - ./.ollama/models/:/root/.ollama/models/
+      - ./start_in_docker.sh:/root/ros2_ws/src/start_in_docker.sh
     environment:
       - DISPLAY=$DISPLAY
       - AUDIO_GID=${AUDIO_GID}

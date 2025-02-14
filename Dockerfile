@@ -1,5 +1,5 @@
 # Stage 1: Builder environment
-FROM ubuntu:22.04 AS builder
+FROM ros:iron-ros-base AS builder
 
 # Install build dependencies
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -42,12 +42,8 @@ RUN cmake -B build \
     cmake --build build -j --config Release && \
     make -j$(nproc) 
 
-
-# Ollama
-RUN curl -fsSL https://ollama.com/install.sh | sh
-
 # Stage 2: Runtime environment
-FROM ubuntu:22.04
+FROM ros:iron-ros-base
 
 # Install ALL dependencies in one layer
 RUN apt-get update && \
@@ -76,6 +72,26 @@ ENV CUDA_HOME=/usr/local/cuda-11.8 \
     PATH="/usr/local/cuda-11.8/bin:${PATH}" \
     LD_LIBRARY_PATH="/usr/local/cuda-11.8/lib64:${LD_LIBRARY_PATH}"
 
+# Install Ollama 
+RUN apt-get update && \
+    apt-get install -y curl && \
+    curl -fsSL https://ollama.com/install.sh | bash && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Create necessary directories
+RUN mkdir -p /root/.ollama
+
+# Volume for Ollama models
+VOLUME /root/.ollama
+
+# Environment variables for Ollama
+ENV OLLAMA_HOST=0.0.0.0:11434
+ENV PATH="/usr/local/bin:${PATH}"
+
+# Expose Ollama port
+EXPOSE 11434
+
 # Audio configuration
 RUN echo 'pcm.!default { \n\
         type plug \n\
@@ -91,5 +107,6 @@ RUN echo 'pcm.!default { \n\
 
 # Final setup
 RUN useradd -m -G audio pulseuser
+RUN mkdir /root/ros2_ws/src/ -p
 WORKDIR /root/ros2_ws/
 CMD ["tail", "-f", "/dev/null"]
