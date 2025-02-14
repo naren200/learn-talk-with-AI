@@ -1,14 +1,19 @@
 version: "3.8"
 
 services:
-  speechtotext:
-    image: naren200/whisper-live:v1
-    container_name: speechtotext
+  talk_with_ai:
+    image: naren200/talk_with_ai:v1
+    container_name: talk_with_ai
     devices:
       - /dev/snd:/dev/snd
+    volumes:
+      - ./listen_node/:/root/ros2_ws/src/listen_node/
+      - ./speak_node/:/root/ros2_ws/src/speak_node/
+      - ./think_node/:/root/ros2_ws/src/think_node/
     environment:
       - DISPLAY=$DISPLAY
       - AUDIO_GID=${AUDIO_GID}
+      - NVIDIA_VISIBLE_DEVICES=all
     deploy:
       resources:
         reservations:
@@ -17,6 +22,4 @@ services:
               count: 1
               capabilities: [gpu]
     runtime: nvidia 
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
 
