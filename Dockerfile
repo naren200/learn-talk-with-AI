@@ -60,6 +60,7 @@ RUN apt-get update && \
     alsa-utils \
     make \
     g++ \
+    sox \
     libasound2-dev \
     && rm -rf /var/lib/apt/lists/*
 
@@ -95,19 +96,6 @@ ENV MODEL="ggml-small.en.bin"
 
 # Expose Ollama port
 EXPOSE 11434
-
-# Audio configuration
-RUN echo 'pcm.!default { \n\
-        type plug \n\
-        slave { \n\
-            pcm "hw:0,0" \n\
-            rate 16000 \n\
-            buffer_size 16000 \n\
-            period_size 8000 \n\
-        } \n\
-    }\n\
-    defaults.pcm.rate_converter "speexrate_best"\n\
-    ' > /etc/asound.conf
 
 # Final setup
 RUN useradd -m -G audio pulseuser

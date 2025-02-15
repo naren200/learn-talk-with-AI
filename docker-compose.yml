@@ -10,10 +10,13 @@ services:
       - ./src/:/root/ros2_ws/src/
       - ./.ollama/models/:/root/.ollama/models/
       - ./start_in_docker.sh:/root/ros2_ws/src/start_in_docker.sh
+      - /run/user/1000/pulse:/run/user/1000/pulse  # Add PulseAudio socket
+      - ${HOME}/.config/pulse/cookie:/root/.config/pulse/cookie  # Add PulseAudio cookie
     environment:
       - DISPLAY=$DISPLAY
       - AUDIO_GID=${AUDIO_GID}
       - NVIDIA_VISIBLE_DEVICES=all
+      - PULSE_SERVER=unix:/run/user/1000/pulse/native  # Add PulseAudio server
     deploy:
       resources:
         reservations:
