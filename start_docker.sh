@@ -1,6 +1,7 @@
 
 export AUDIO_GID=$(getent group audio | cut -d: -f3)
 
+export WHISPER_MODEL="ggml-small.en.bin"
 
 # Default developer mode
 DEVELOPER="False"

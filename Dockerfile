@@ -90,12 +90,12 @@ RUN mkdir -p /root/.ollama
 VOLUME /root/.ollama
 
 # Environment variables for Ollama
-ENV OLLAMA_HOST=0.0.0.0:11434
+# ENV OLLAMA_HOST=0.0.0.0:11434
 ENV PATH="/usr/local/bin:${PATH}"
-ENV MODEL="ggml-small.en.bin"
+ENV WHISPER_MODEL="ggml-small.en.bin"
 
 # Expose Ollama port
-EXPOSE 11434
+# EXPOSE 11434
 
 # Final setup
 RUN useradd -m -G audio pulseuser

@@ -35,13 +35,13 @@ private:
     }
 
     void processWhisperStream() {
-        const char* model_env = std::getenv("MODEL");
+        const char* model_env = std::getenv("WHISPER_MODEL");
         if (!model_env) {
             RCLCPP_ERROR(this->get_logger(), "MODEL environment variable not set");
             return;
         }
     
-        std::string model_name = model_env ? model_env : "base.en";
+        std::string model_name = model_env ? model_env : "ggml-small.en.bin";
 
         std::string cmd = "stdbuf -oL /usr/local/src/whisper.cpp/build/bin/whisper-stream -m " + 
                          std::string("/usr/local/src/whisper.cpp/models/") + 
@@ -151,9 +151,9 @@ private:
 public:
     WhisperNode() : Node("whisper_node") {
         transcript_pub_ = this->create_publisher<std_msgs::msg::String>(
-            "spoken_str", 10);
+            "/spoken_str", 10);
         listening_pub_ = this->create_publisher<std_msgs::msg::Bool>(
-            "whisper_listening", 10);
+            "/whisper_listening", 10);
 
         whisper_thread_ = std::thread(&WhisperNode::processWhisperStream, this);
         
