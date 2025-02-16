@@ -25,10 +25,42 @@ public:
     
     // Verify model existence first
     if(!verify_model_exists(current_model_)) {
-        RCLCPP_INFO(get_logger(), "Downloading model: %s", current_model_.c_str());
-        if(!ollama::pull_model(current_model_)) {
-            RCLCPP_FATAL(get_logger(), "Failed to download model: %s", current_model_.c_str());
-            throw std::runtime_error("Model download failed");
+        // Set longer timeout for large model downloads
+        ollama::setReadTimeout(300);  // 5 minutes timeout
+        
+        try {
+            // First ensure server is running
+            if(!ollama::is_running()) {
+                RCLCPP_ERROR(get_logger(), "Ollama server not running");
+                throw std::runtime_error("Ollama server not available");
+            }
+
+            // Attempt model pull with retries
+            int max_retries = 3;
+            bool pull_success = false;
+            
+            for(int i = 0; i < max_retries && !pull_success; i++) {
+                try {
+                    pull_success = ollama::pull_model(current_model_, true);
+                    if(pull_success) {
+                        RCLCPP_INFO(get_logger(), "Successfully downloaded model: %s", current_model_.c_str());
+                        break;
+                    }
+                }
+                catch(const ollama::exception& e) {
+                    RCLCPP_WARN(get_logger(), "Download attempt %d failed: %s", i+1, e.what());
+                    std::this_thread::sleep_for(std::chrono::seconds(2));
+                }
+            }
+
+            if(!pull_success) {
+                RCLCPP_FATAL(get_logger(), "Failed to download model after %d attempts", max_retries);
+                throw std::runtime_error("Model download failed");
+            }
+        }
+        catch(const std::exception& e) {
+            RCLCPP_FATAL(get_logger(), "Critical error during model setup: %s", e.what());
+            throw;
         }
     }
       
@@ -47,8 +79,6 @@ public:
     // Start processing thread
     processing_thread_ = std::thread(&ThinkNode::processing_loop, this);
   }
-  static [[maybe_unused]] void show_requests(bool enable) {log_requests = enable;}
-  static [[maybe_unused]] void show_replies(bool enable) {log_replies = enable;}
   
   ~ThinkNode()
   {
@@ -109,7 +139,6 @@ private:
     
     if(generation_in_progress_) {
       RCLCPP_INFO(get_logger(), "Interrupting current generation");
-      ollama::ollama.delete_model(current_model_);
       load_model(current_model_);
     }
   }
@@ -142,16 +171,19 @@ private:
           // Check if model is running first
           auto running = ollama::list_running_models();
           if(std::find(running.begin(), running.end(), current_model_) != running.end()) {
-              if(ollama::delete_model(current_model_)) {
-                  RCLCPP_INFO(get_logger(), "Successfully unloaded model: %s", current_model_.c_str());
+              std::string cmd = "ollama stop " + current_model_;
+              if(system(cmd.c_str()) == 0) {
+                  RCLCPP_INFO(get_logger(), "Successfully stopped model: %s", current_model_.c_str());
+              } else {
+                  RCLCPP_ERROR(get_logger(), "Failed to stop model: %s", current_model_.c_str());
               }
           }
       }
       catch(const std::exception& e) {
-          RCLCPP_ERROR(get_logger(), "Failed to unload model: %s", e.what());
+          RCLCPP_ERROR(get_logger(), "Failed to stop model: %s", e.what());
       }
   }
-  
+
   void processing_loop()
   {
     while(!stop_processing_) {
