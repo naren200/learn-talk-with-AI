@@ -43,9 +43,10 @@ public:
         text_sub_ = create_subscription<std_msgs::msg::String>(
             "/generated_response", 10,
             [this](const std_msgs::msg::String::SharedPtr msg) {
+                RCLCPP_INFO(get_logger(), "Received text: '%s'", msg->data.c_str());
                 handle_new_text(msg->data);
             });
-            
+                    
         bool_sub_ = create_subscription<std_msgs::msg::Bool>(
             "/is_speaking", 10,
             [this](const std_msgs::msg::Bool::SharedPtr msg) {
@@ -67,8 +68,11 @@ private:
     void handle_new_text(const std::string& text) {
         std::lock_guard<std::mutex> lock(audio_mutex_);
         
+        RCLCPP_INFO(get_logger(), "Starting to handle new text: '%s'", text.c_str());
+        
         // Stop current playback
         if (playing_) {
+            RCLCPP_INFO(get_logger(), "Stopping current playback");
             SDL_PauseAudioDevice(device_, 1);
             SDL_CloseAudioDevice(device_);
             playing_ = false;
@@ -76,10 +80,17 @@ private:
         
         // Generate new audio file in a Python-safe thread
         playback_thread_ = std::thread([this, text]() {
+            RCLCPP_INFO(get_logger(), "Starting audio generation thread");
             py::gil_scoped_acquire acquire;
             std::string filename = generate_audio(text);
-            play_audio(filename);
-            std::filesystem::remove(filename);
+            
+            if (!filename.empty()) {
+                RCLCPP_INFO(get_logger(), "Audio generated successfully, playing file: %s", filename.c_str());
+                play_audio(filename);
+                std::filesystem::remove(filename);
+            } else {
+                RCLCPP_ERROR(get_logger(), "Failed to generate audio file");
+            }
         });
         playback_thread_.detach();
     }
@@ -99,72 +110,96 @@ private:
 
     std::string generate_audio(const std::string& text) {
         py::gil_scoped_acquire acquire;
-        std::string filename = "temp_audio_" + std::to_string(++file_counter_) + ".wav";
-        
+        std::string filename = "/tmp/audio_" + std::to_string(++file_counter_) + ".wav"; // Use /tmp for safer cleanup
+        RCLCPP_INFO(get_logger(), "Starting generate_audio fn ...");
         try {
+            RCLCPP_INFO(get_logger(), "Generating audio for: '%s'", text.c_str());
+            
+            // Create FRESH TTS instance each time
             py::object tts = tts_class_(
                 py::arg("language") = "EN",
                 py::arg("device") = "auto"
             );
             
-            tts.attr("tts_to_file")(
-                text,
-                speaker_id_,
-                filename,
-                py::arg("speed") = 0.8
-            );
+            // Verify file creation
+            if(std::filesystem::exists(filename)) {
+                std::filesystem::remove(filename);
+            }
+
+            tts.attr("tts_to_file")(text, speaker_id_, filename, py::arg("speed") = 0.8);
+            
+            // Add file verification
+            if(!std::filesystem::exists(filename)) {
+                RCLCPP_ERROR(get_logger(), "File creation failed!");
+                return "";
+            }
+            RCLCPP_INFO(get_logger(), "Created: %s (Size: %ld bytes)", 
+                    filename.c_str(), std::filesystem::file_size(filename));
+
         } catch (const py::error_already_set& e) {
-            RCLCPP_ERROR(get_logger(), "TTS generation failed: %s", e.what());
+            RCLCPP_ERROR(get_logger(), "TTS Error: %s", e.what());
+            return "";
         }
-        
         return filename;
     }
-
+    
     void play_audio(const std::string& filename) {
-        SDL_AudioSpec wav_spec;
-        Uint32 wav_length;
-        Uint8 *wav_buffer = nullptr;
-        
-        if (!SDL_LoadWAV(filename.c_str(), &wav_spec, &wav_buffer, &wav_length)) {
-            RCLCPP_ERROR(get_logger(), "Failed to load WAV file: %s", SDL_GetError());
+        // Add existence check
+        if(!std::filesystem::exists(filename)) {
+            RCLCPP_ERROR(get_logger(), "Audio file missing: %s", filename.c_str());
             return;
         }
+    
+        // SDL INITIALIZATION VERIFICATION
+        SDL_AudioSpec wav_spec;
+        Uint32 wav_length;
+        Uint8* wav_buffer = nullptr;
+    
+        if(!SDL_LoadWAV(filename.c_str(), &wav_spec, &wav_buffer, &wav_length)) {
+            RCLCPP_ERROR(get_logger(), "SDL Load Failed: %s", SDL_GetError());
+            
+            // Fallback to aplay with logging
+            RCLCPP_INFO(get_logger(), "Using aplay fallback");
+            std::string cmd = "aplay -v \"" + filename + "\"";
+            int result = system(cmd.c_str());
+            if(result != 0) {
+                RCLCPP_ERROR(get_logger(), "aplay failed (%d)", result);
+            }
+            return;
+        }
+    
+        // BUFFER SIZE ADJUSTMENT (Prevent underruns)
+        wav_spec.samples = 4096; // Increase buffer size
         
         SDL_AudioDeviceID device = SDL_OpenAudioDevice(nullptr, 0, &wav_spec, nullptr, 0);
-        if (device == 0) {
-            RCLCPP_ERROR(get_logger(), "Failed to open audio device: %s", SDL_GetError());
+        if(!device) {
+            RCLCPP_ERROR(get_logger(), "SDL Open Failed: %s", SDL_GetError());
             SDL_FreeWAV(wav_buffer);
             return;
         }
-        
-        {
-            std::lock_guard<std::mutex> lock(audio_mutex_);
-            device_ = device;
-            playing_ = true;
-            interrupted_ = false;
-        }
-        
+    
+        // QUEUE MANAGEMENT
+        SDL_ClearQueuedAudio(device); // Clear previous data
         SDL_QueueAudio(device, wav_buffer, wav_length);
-        SDL_PauseAudioDevice(device, 0);
-        
-        while (true) {
-            std::this_thread::sleep_for(100ms);
-            std::lock_guard<std::mutex> lock(audio_mutex_);
-            if (!playing_ || interrupted_ || SDL_GetQueuedAudioSize(device) == 0) {
+        SDL_PauseAudioDevice(device, 0); // Start playback
+    
+        // MONITOR PLAYBACK
+        const auto start_time = std::chrono::steady_clock::now();
+        while(SDL_GetQueuedAudioSize(device) > 0) {
+            std::this_thread::sleep_for(50ms);
+            
+            // Timeout after 30 seconds
+            if(std::chrono::steady_clock::now() - start_time > 30s) {
+                RCLCPP_WARN(get_logger(), "Audio playback timeout");
                 break;
             }
         }
-        
-        {
-            std::lock_guard<std::mutex> lock(audio_mutex_);
-            if (playing_) {
-                SDL_CloseAudioDevice(device);
-                playing_ = false;
-            }
-        }
+    
+        // CLEANUP
+        SDL_CloseAudioDevice(device);
         SDL_FreeWAV(wav_buffer);
     }
-
+    
     // Member variables
     std::unique_ptr<py::scoped_interpreter> guard_;
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr text_sub_;
