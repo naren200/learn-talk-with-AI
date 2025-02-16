@@ -62,6 +62,10 @@ RUN apt-get update && \
     g++ \
     sox \
     libasound2-dev \
+    libsdl2-dev \
+    python3-dev \
+    python3-pybind11 \
+    ros-humble-pybind11-vendor \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy CUDA runtime
@@ -89,13 +93,14 @@ RUN mkdir -p /root/.ollama
 # Volume for Ollama models
 VOLUME /root/.ollama
 
-# Environment variables for Ollama
-# ENV OLLAMA_HOST=0.0.0.0:11434
 ENV PATH="/usr/local/bin:${PATH}"
 ENV WHISPER_MODEL="ggml-small.en.bin"
 
-# Expose Ollama port
-# EXPOSE 11434
+
+# Speeching Module
+RUN apt install  -y
+
+
 
 # Final setup
 RUN useradd -m -G audio pulseuser
