@@ -30,6 +30,11 @@ public:
         SDL_CloseAudio();
         SDL_Quit();
     }
+    void pause(bool should_pause) {
+        if (device_id != 0) {
+            SDL_PauseAudioDevice(device_id, should_pause ? 1 : 0);
+        }
+    }
 
     bool playWavFile(const std::string& filename) {
         // Close existing device before reopening
@@ -190,27 +195,27 @@ private:
     void listeningCallback(const std_msgs::msg::Bool::SharedPtr msg) {
         std::lock_guard<std::mutex> lock(audio_mutex_);
         
-        if (msg->data) {
+        if (msg->data && player_->isPlaying()) {
             // User is speaking, pause playback
-            SDL_PauseAudio(1);
+            player_->pause(true);
             is_paused_ = true;
         } else if (is_paused_) {
             // Resume playback if it was paused
-            SDL_PauseAudio(0);
+            player_->pause(false);
             is_paused_ = false;
         }
     }
-
+    
     void continueCallback(const std_msgs::msg::Bool::SharedPtr msg) {
         std::lock_guard<std::mutex> lock(audio_mutex_);
         
-        if (msg->data && is_paused_) {
+        if (msg->data && is_paused_ && player_->isPlaying()) {
             // Resume playback
-            SDL_PauseAudio(0);
+            player_->pause(false);
             is_paused_ = false;
         }
     }
-
+    
     void cleanupAudioFile() {
         if (!current_audio_file_.empty() && std::filesystem::exists(current_audio_file_)) {
             try {
