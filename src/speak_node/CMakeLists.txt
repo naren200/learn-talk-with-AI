@@ -39,6 +39,14 @@ ament_target_dependencies(speak_node
   std_msgs
 )
 
+# Set default visibility to match pybind11's configuration
+add_compile_options(-fvisibility=hidden)
+# Explicitly export symbols for ROS classes
+target_compile_definitions(speak_node PRIVATE -DROS_BUILD_SHARED_LIBS=ON)
+
+target_compile_definitions(speak_node PRIVATE 
+    "SDL_AUDIO_BUFFER_SIZE=512"
+)
 
 # Install targets
 install(TARGETS

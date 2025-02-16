@@ -1,223 +1,232 @@
+// speak_node.cpp
+#include <memory>
+#include <string>
+#include <chrono>
+#include <thread>
+#include <mutex>
+#include <pybind11/embed.h>
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <SDL2/SDL.h>
-#include <pybind11/embed.h>
+#include <SDL2/SDL_audio.h>
 #include <filesystem>
-#include <thread>
-#include <atomic>
-#include <mutex>
 
 namespace py = pybind11;
-using namespace std::chrono_literals;
 
-class SpeechNode : public rclcpp::Node {
+class AudioPlayer {
 public:
-    SpeechNode() : Node("speak_node"), guard_(std::make_unique<py::scoped_interpreter>()) {
-        // Initialize Python objects before SDL
-        try {
-            py::module melo = py::module::import("melo.api");
-            tts_class_ = melo.attr("TTS");
-            
-            // Create TTS instance first
-            py::object tts_instance = tts_class_(
-                py::arg("language") = "EN",
-                py::arg("device") = "auto"
-            );
-            
-            // Get hps from instance instead of class
-            speaker_ids_ = tts_instance.attr("hps").attr("data").attr("spk2id");
-            speaker_id_ = speaker_ids_["EN-US"];
-        } catch (const py::error_already_set& e) {
-            RCLCPP_FATAL(get_logger(), "Python error: %s", e.what());
-            throw std::runtime_error("Python module initialization failed");
+    // In AudioPlayer constructor
+    AudioPlayer() {
+        if (SDL_Init(SDL_INIT_AUDIO) < 0) {
+            throw std::runtime_error("SDL audio init failed: " + std::string(SDL_GetError()));
         }
-
-        // Initialize SDL after Python
-        if (SDL_Init(SDL_INIT_AUDIO) != 0) {
-            RCLCPP_FATAL(get_logger(), "SDL initialization failed: %s", SDL_GetError());
-            throw std::runtime_error("SDL init failed");
-        }
-
-        // Create subscribers
-        text_sub_ = create_subscription<std_msgs::msg::String>(
-            "/generated_response", 10,
-            [this](const std_msgs::msg::String::SharedPtr msg) {
-                RCLCPP_INFO(get_logger(), "Received text: '%s'", msg->data.c_str());
-                handle_new_text(msg->data);
-            });
-                    
-        bool_sub_ = create_subscription<std_msgs::msg::Bool>(
-            "/is_speaking", 10,
-            [this](const std_msgs::msg::Bool::SharedPtr msg) {
-                handle_interrupt(msg->data);
-            });
+        
+        // Force ALSA driver for Linux compatibility
+        SDL_setenv("SDL_AUDIODRIVER", "alsa", 1);
     }
 
-    ~SpeechNode() {
-        {
-            std::lock_guard<std::mutex> lock(audio_mutex_);
-            if (playing_) {
-                SDL_CloseAudioDevice(device_);
-            }
-        }
+    ~AudioPlayer() {
+        SDL_CloseAudio();
         SDL_Quit();
     }
 
+    bool playWavFile(const std::string& filename) {
+        // Close existing device before reopening
+        if (device_id != 0) {
+            SDL_CloseAudioDevice(device_id);
+            device_id = 0;
+        }
+
+        SDL_AudioSpec loadedSpec;
+        if (SDL_LoadWAV(filename.c_str(), &loadedSpec, &wavBuffer, &wavLength) == nullptr) {
+            return false;
+        }
+
+        // Reset playback position
+        audioPos = 0;
+        playing = true;
+
+        SDL_AudioSpec desiredSpec = loadedSpec;
+        desiredSpec.callback = audioCallback;
+        desiredSpec.userdata = this;
+
+        // Open new audio device
+        device_id = SDL_OpenAudioDevice(nullptr, 0, &desiredSpec, nullptr, 0);
+        if (device_id == 0) {
+            return false;
+        }
+
+        SDL_PauseAudioDevice(device_id, 0);
+        return true;
+    }
+
+    void stop() {
+        if (device_id != 0) {
+            SDL_PauseAudioDevice(device_id, 1);
+            SDL_CloseAudioDevice(device_id);
+            device_id = 0;
+        }
+        SDL_FreeWAV(wavBuffer);
+        playing = false;
+    }
+
+    bool isPlaying() const {
+        return playing;
+    }
+
 private:
-    void handle_new_text(const std::string& text) {
-        std::lock_guard<std::mutex> lock(audio_mutex_);
-        
-        RCLCPP_INFO(get_logger(), "Starting to handle new text: '%s'", text.c_str());
-        
-        // Stop current playback
-        if (playing_) {
-            RCLCPP_INFO(get_logger(), "Stopping current playback");
-            SDL_PauseAudioDevice(device_, 1);
-            SDL_CloseAudioDevice(device_);
-            playing_ = false;
-        }
-        
-        // Generate new audio file in a Python-safe thread
-        playback_thread_ = std::thread([this, text]() {
-            RCLCPP_INFO(get_logger(), "Starting audio generation thread");
-            py::gil_scoped_acquire acquire;
-            std::string filename = generate_audio(text);
-            
-            if (!filename.empty()) {
-                RCLCPP_INFO(get_logger(), "Audio generated successfully, playing file: %s", filename.c_str());
-                play_audio(filename);
-                std::filesystem::remove(filename);
-            } else {
-                RCLCPP_ERROR(get_logger(), "Failed to generate audio file");
-            }
-        });
-        playback_thread_.detach();
-    }
+    SDL_AudioSpec wavSpec;
+    Uint8* wavBuffer = nullptr;
+    Uint32 wavLength = 0;
+    Uint32 audioPos = 0;
+    bool playing = false;
+    SDL_AudioDeviceID device_id = 0; // Add this member
 
-    void handle_interrupt(bool user_spoke) {
-        std::lock_guard<std::mutex> lock(audio_mutex_);
-        
-        if (user_spoke && playing_) {
-            SDL_PauseAudioDevice(device_, 1);
-            interrupted_ = true;
-        }
-        else if (!user_spoke && interrupted_) {
-            SDL_PauseAudioDevice(device_, 0);
-            interrupted_ = false;
-        }
-    }
-
-    std::string generate_audio(const std::string& text) {
-        py::gil_scoped_acquire acquire;
-        std::string filename = "/tmp/audio_" + std::to_string(++file_counter_) + ".wav"; // Use /tmp for safer cleanup
-        RCLCPP_INFO(get_logger(), "Starting generate_audio fn ...");
-        try {
-            RCLCPP_INFO(get_logger(), "Generating audio for: '%s'", text.c_str());
-            
-            // Create FRESH TTS instance each time
-            py::object tts = tts_class_(
-                py::arg("language") = "EN",
-                py::arg("device") = "auto"
-            );
-            
-            // Verify file creation
-            if(std::filesystem::exists(filename)) {
-                std::filesystem::remove(filename);
-            }
-
-            tts.attr("tts_to_file")(text, speaker_id_, filename, py::arg("speed") = 0.8);
-            
-            // Add file verification
-            if(!std::filesystem::exists(filename)) {
-                RCLCPP_ERROR(get_logger(), "File creation failed!");
-                return "";
-            }
-            RCLCPP_INFO(get_logger(), "Created: %s (Size: %ld bytes)", 
-                    filename.c_str(), std::filesystem::file_size(filename));
-
-        } catch (const py::error_already_set& e) {
-            RCLCPP_ERROR(get_logger(), "TTS Error: %s", e.what());
-            return "";
-        }
-        return filename;
-    }
+    static void audioCallback(void* userdata, Uint8* stream, int len) {
+        AudioPlayer* player = static_cast<AudioPlayer*>(userdata);
+        if (!player->playing) return;
     
-    void play_audio(const std::string& filename) {
-        // Add existence check
-        if(!std::filesystem::exists(filename)) {
-            RCLCPP_ERROR(get_logger(), "Audio file missing: %s", filename.c_str());
+        Uint32 remaining = player->wavLength - player->audioPos;
+        if (remaining == 0) {
+            player->playing = false;
             return;
         }
     
-        // SDL INITIALIZATION VERIFICATION
-        SDL_AudioSpec wav_spec;
-        Uint32 wav_length;
-        Uint8* wav_buffer = nullptr;
-    
-        if(!SDL_LoadWAV(filename.c_str(), &wav_spec, &wav_buffer, &wav_length)) {
-            RCLCPP_ERROR(get_logger(), "SDL Load Failed: %s", SDL_GetError());
-            
-            // Fallback to aplay with logging
-            RCLCPP_INFO(get_logger(), "Using aplay fallback");
-            std::string cmd = "aplay -v \"" + filename + "\"";
-            int result = system(cmd.c_str());
-            if(result != 0) {
-                RCLCPP_ERROR(get_logger(), "aplay failed (%d)", result);
-            }
-            return;
-        }
-    
-        // BUFFER SIZE ADJUSTMENT (Prevent underruns)
-        wav_spec.samples = 4096; // Increase buffer size
-        
-        SDL_AudioDeviceID device = SDL_OpenAudioDevice(nullptr, 0, &wav_spec, nullptr, 0);
-        if(!device) {
-            RCLCPP_ERROR(get_logger(), "SDL Open Failed: %s", SDL_GetError());
-            SDL_FreeWAV(wav_buffer);
-            return;
-        }
-    
-        // QUEUE MANAGEMENT
-        SDL_ClearQueuedAudio(device); // Clear previous data
-        SDL_QueueAudio(device, wav_buffer, wav_length);
-        SDL_PauseAudioDevice(device, 0); // Start playback
-    
-        // MONITOR PLAYBACK
-        const auto start_time = std::chrono::steady_clock::now();
-        while(SDL_GetQueuedAudioSize(device) > 0) {
-            std::this_thread::sleep_for(50ms);
-            
-            // Timeout after 30 seconds
-            if(std::chrono::steady_clock::now() - start_time > 30s) {
-                RCLCPP_WARN(get_logger(), "Audio playback timeout");
-                break;
-            }
-        }
-    
-        // CLEANUP
-        SDL_CloseAudioDevice(device);
-        SDL_FreeWAV(wav_buffer);
+        Uint32 bytesToCopy = (remaining > (Uint32)len) ? len : remaining;
+        SDL_memcpy(stream, &player->wavBuffer[player->audioPos], bytesToCopy);
+        player->audioPos += bytesToCopy;
     }
-    
-    // Member variables
-    std::unique_ptr<py::scoped_interpreter> guard_;
-    rclcpp::Subscription<std_msgs::msg::String>::SharedPtr text_sub_;
-    rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr bool_sub_;
-    std::thread playback_thread_;
-    std::atomic<bool> playing_{false};
-    std::atomic<bool> interrupted_{false};
-    std::mutex audio_mutex_;
-    SDL_AudioDeviceID device_;
-    py::object tts_class_;
-    py::dict speaker_ids_;
-    py::object speaker_id_;
-    std::atomic<uint32_t> file_counter_{0};
 };
 
-int main(int argc, char* argv[]) {
+#pragma GCC visibility push(default)
+
+class SpeakNode : public rclcpp::Node {
+public:
+    SpeakNode() : Node("speak_node") {
+        // Parameter declaration with descriptor
+        auto param_desc = rcl_interfaces::msg::ParameterDescriptor();
+        param_desc.description = "Audio output device name";
+        
+        // Declare parameter properly
+        this->declare_parameter("audio_device", "default", param_desc);
+        
+        // Retrieve parameter value
+        std::string audio_device = this->get_parameter("audio_device").as_string();
+
+        // Initialize Python interpreter
+        py::initialize_interpreter();
+
+        // Import melo.api and create TTS instance
+        auto melo = py::module::import("melo.api");
+        tts = melo.attr("TTS")("EN", "auto");
+
+        // Initialize subscriptions
+        response_sub_ = create_subscription<std_msgs::msg::String>(
+            "/generated_response", 10,
+            std::bind(&SpeakNode::responseCallback, this, std::placeholders::_1));
+
+        listening_sub_ = create_subscription<std_msgs::msg::Bool>(
+            "/is_listening", 10,
+            std::bind(&SpeakNode::listeningCallback, this, std::placeholders::_1));
+
+        continue_sub_ = create_subscription<std_msgs::msg::Bool>(
+            "/continue_playing", 10,
+            std::bind(&SpeakNode::continueCallback, this, std::placeholders::_1));
+
+        player_ = std::make_unique<AudioPlayer>();
+        current_audio_file_ = "";
+        is_paused_ = false;
+    }
+
+    ~SpeakNode() {
+        cleanupAudioFile();
+        py::finalize_interpreter();
+    }
+
+private:
+    rclcpp::Subscription<std_msgs::msg::String>::SharedPtr response_sub_;
+    rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr listening_sub_;
+    rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr continue_sub_;
+    std::unique_ptr<AudioPlayer> player_;
+    py::object tts;
+    std::string current_audio_file_;
+    std::mutex audio_mutex_;
+    bool is_paused_;
+
+    void responseCallback(const std_msgs::msg::String::SharedPtr msg) {
+        std::lock_guard<std::mutex> lock(audio_mutex_);
+        
+        // Stop current playback if any
+        if (player_->isPlaying()) {
+            player_->stop();
+        }
+
+        // Clean up previous audio file
+        cleanupAudioFile();
+
+        // Generate new audio file
+        current_audio_file_ = "temp_" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count()) + ".wav";
+        
+        try {
+            // Convert text to speech using melo TTS
+            tts.attr("tts_to_file")(
+                msg->data,
+                tts.attr("hps").attr("data").attr("spk2id")["EN-US"],
+                current_audio_file_,
+                0.8  // speed
+            );
+
+            // Play the new audio file
+            if (!player_->playWavFile(current_audio_file_)) {
+                RCLCPP_ERROR(this->get_logger(), "Failed to play audio file");
+                return;
+            }
+        } catch (const py::error_already_set& e) {
+            RCLCPP_ERROR(this->get_logger(), "Python error: %s", e.what());
+        }
+    }
+
+    void listeningCallback(const std_msgs::msg::Bool::SharedPtr msg) {
+        std::lock_guard<std::mutex> lock(audio_mutex_);
+        
+        if (msg->data) {
+            // User is speaking, pause playback
+            SDL_PauseAudio(1);
+            is_paused_ = true;
+        } else if (is_paused_) {
+            // Resume playback if it was paused
+            SDL_PauseAudio(0);
+            is_paused_ = false;
+        }
+    }
+
+    void continueCallback(const std_msgs::msg::Bool::SharedPtr msg) {
+        std::lock_guard<std::mutex> lock(audio_mutex_);
+        
+        if (msg->data && is_paused_) {
+            // Resume playback
+            SDL_PauseAudio(0);
+            is_paused_ = false;
+        }
+    }
+
+    void cleanupAudioFile() {
+        if (!current_audio_file_.empty() && std::filesystem::exists(current_audio_file_)) {
+            try {
+                std::filesystem::remove(current_audio_file_);
+            } catch (const std::filesystem::filesystem_error& e) {
+                RCLCPP_ERROR(this->get_logger(), "Failed to remove audio file: %s", e.what());
+            }
+        }
+    }
+};
+#pragma GCC visibility pop
+
+int main(int argc, char** argv) {
+    
     rclcpp::init(argc, argv);
-    auto node = std::make_shared<SpeechNode>();
+    auto node = std::make_shared<SpeakNode>();
     rclcpp::spin(node);
     rclcpp::shutdown();
     return 0;

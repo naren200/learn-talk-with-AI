@@ -1,0 +1,8 @@
+<launch>
+  <node pkg="speak_node" exec="speak_node" output="screen">
+    <param name="language" value="EN"/>
+    <param name="device" value="auto"/>
+    <param name="speaker" value="EN-US"/>
+    <param name="speed" value="0.8"/>
+  </node>
+</launch>
