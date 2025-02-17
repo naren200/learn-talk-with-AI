@@ -20,18 +20,18 @@ include_directories(
 
 
 # Create the node executable
-add_executable(think_node 
+add_executable(thinker_node 
   src/thinker_node.cpp
 )
 
 # Link dependencies
-ament_target_dependencies(think_node
+ament_target_dependencies(thinker_node
   rclcpp
   std_msgs
 )
 
 # Install
-install(TARGETS think_node
+install(TARGETS thinker_node
   DESTINATION lib/${PROJECT_NAME}
 )
 

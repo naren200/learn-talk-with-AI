@@ -10,17 +10,17 @@
 
 using namespace std::chrono_literals;
 
-class ThinkNode : public rclcpp::Node
+class ThinkerNode : public rclcpp::Node
 {
 public:
-  ThinkNode() : Node("think_node"), current_model_("gemma2:2b")
+  ThinkerNode() : Node("thinker_node"), current_model_("gemma2:2b")
   {
     // system("OLLAMA_HOST=0.0.0.0:11434 ollama serve &");  // Force port specification
 
     // Initialize Ollama with proper host configuration
-    ollama::setServerURL("http://0.0.0.0:11434");  // Allow external connections
+    // ollama::setServerURL("http://0.0.0.0:11434");  // Allow external connections
     ollama::allow_exceptions(true);  // Enable proper error reporting
-    // system("ollama serve &");  // Start server in background
+    system("OLLAMA_HOST=0.0.0.0 ollama serve &");  // Start server in background
     std::this_thread::sleep_for(2s);  // Wait for server initialization
     
     // Verify model existence first
@@ -77,10 +77,10 @@ public:
     load_model(current_model_);
 
     // Start processing thread
-    processing_thread_ = std::thread(&ThinkNode::processing_loop, this);
+    processing_thread_ = std::thread(&ThinkerNode::processing_loop, this);
   }
   
-  ~ThinkNode()
+  ~ThinkerNode()
   {
     stop_processing_ = true;
     stop_ollama_model();
@@ -112,20 +112,19 @@ private:
     return std::find(models.begin(), models.end(), model) != models.end();
   }
   bool check_server_connection() {
-      try {
-          // First check basic server availability
-          if (!ollama::is_running()) {
-              return false;
+      int max_retries = 5;
+      for (int i = 0; i < max_retries; ++i) {
+          try {
+              if (ollama::is_running()) {
+                  auto model_info = ollama::show_model_info(current_model_);
+                  return !model_info.is_null() && model_info.contains("modelfile");
+              }
+          } catch (const std::exception& e) {
+              RCLCPP_ERROR(get_logger(), "Connection attempt %d failed: %s", i + 1, e.what());
+              std::this_thread::sleep_for(std::chrono::seconds(1));
           }
-          
-          // Then verify model status
-          auto model_info = ollama::show_model_info(current_model_);
-          return !model_info.is_null() && model_info.contains("modelfile");
-      } 
-      catch (const std::exception& e) {
-          RCLCPP_ERROR(get_logger(), "Connection check failed: %s", e.what());
-          return false;
       }
+      return false;
   }
 
   void handle_new_input(const std::string& input)
@@ -252,7 +251,14 @@ private:
 int main(int argc, char** argv)
 {
   rclcpp::init(argc, argv);
-  auto node = std::make_shared<ThinkNode>();
+
+  // Check if Ollama server is running
+  if (!ollama::is_running()) {
+    std::cerr << "Ollama server is not running. Please start it with 'ollama serve'." << std::endl;
+    return EXIT_FAILURE;
+  }
+
+  auto node = std::make_shared<ThinkerNode>();
   rclcpp::spin(node);
   rclcpp::shutdown();
   return 0;

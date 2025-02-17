@@ -1,6 +1,7 @@
 from melo.api import TTS
-import os
 
+import nltk
+nltk.download('averaged_perceptron_tagger_eng')
 
 # Speed is adjustable
 speed = 0.8
@@ -46,3 +47,5 @@ model.tts_to_file(text, speaker_ids['EN-US'], output_path, speed=speed)
 #     ssl._create_default_https_context = _create_unverified_https_context
 
 # nltk.download()
+
+"

@@ -24,7 +24,7 @@ include_directories(
 
 # Create the executable
 add_executable(speak_node
-  src/speak_node.cpp
+  src/speaker_node.cpp
 )
 target_link_libraries(speak_node
   ${rclcpp_LIBRARIES}

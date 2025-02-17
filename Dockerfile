@@ -64,6 +64,7 @@ RUN apt-get update && \
     libasound2-dev \
     libsdl2-dev \
     python3-dev \
+    python3-pip \
     python3-pybind11 \
     ros-humble-pybind11-vendor \
     && rm -rf /var/lib/apt/lists/*
@@ -93,13 +94,20 @@ RUN mkdir -p /root/.ollama
 # Volume for Ollama models
 VOLUME /root/.ollama
 
+# Environment variables for Ollama
 ENV PATH="/usr/local/bin:${PATH}"
 ENV WHISPER_MODEL="ggml-small.en.bin"
 
 
-# Speeching Module
-RUN apt install  -y
-
+# # Speeching Module
+RUN git clone https://github.com/myshell-ai/MeloTTS.git && \
+    cd MeloTTS && \
+    pip install -e . && \ 
+    cd .. && \
+    rm -rf MeloTTS/ && \
+    pip install git+https://github.com/myshell-ai/MeloTTS.git && \
+    python3 -m unidic download && \
+    python3 -c "import nltk; nltk.download('averaged_perceptron_tagger_eng')"
 
 
 # Final setup

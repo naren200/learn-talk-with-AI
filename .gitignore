@@ -1,3 +1,4 @@
 .ollama/*
 .vscode/*
 content.txt
+src/launch/__pycache__/*

@@ -8,7 +8,7 @@ services:
       - /dev/snd:/dev/snd
     volumes:
       - ./src/:/root/ros2_ws/src/
-      - ./.ollama/models/:/root/.ollama/models/
+      - ./.ollama/:/root/.ollama/
       - ./start_in_docker.sh:/root/ros2_ws/src/start_in_docker.sh
       - /run/user/1000/pulse:/run/user/1000/pulse  # Add PulseAudio socket
       - ${HOME}/.config/pulse/cookie:/root/.config/pulse/cookie  # Add PulseAudio cookie

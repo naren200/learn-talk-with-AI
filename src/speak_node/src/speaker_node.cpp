@@ -124,7 +124,7 @@ public:
 
         // Import melo.api and create TTS instance
         auto melo = py::module::import("melo.api");
-        tts = melo.attr("TTS")("EN", "auto");
+        tts = melo.attr("TTS")("EN", "cpu"); // Set it to auto... 
 
         // Initialize subscriptions
         response_sub_ = create_subscription<std_msgs::msg::String>(

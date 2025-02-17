@@ -12,7 +12,7 @@ def generate_launch_description():
         
         Node(
             package='think_node',
-            executable='think_node',
+            executable='thinker_node',
             name='think_node',
             output='screen'
         ),
