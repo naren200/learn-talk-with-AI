@@ -13,9 +13,26 @@ set(WHISPER_CPP_BUILD_DIR "${WHISPER_CPP_DIR}/build")
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(PkgConfig REQUIRED)
+find_package(ALSA REQUIRED)
+
+pkg_check_modules(SpeexDsp REQUIRED speexdsp)
+
+
+# Find Portaudio package
+message("Current source directory: ${CMAKE_CURRENT_SOURCE_DIR}")
+
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules")
+set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} "/usr/local/lib/portaudio/")
+find_package(PortAudio REQUIRED)
+if(NOT PortAudio_FOUND)
+    message(FATAL_ERROR "PortAudio not found")
+endif()
 
 # Include directories
 include_directories(
+    ${SpeexDsp_INCLUDE_DIRS}
+    ${PORTAUDIO_INCLUDE_DIRS}
     ${WHISPER_CPP_DIR}/include
     ${WHISPER_CPP_DIR}/ggml/include
 )
@@ -27,6 +44,9 @@ add_executable(listener_node
 
 # Link required libraries
 target_link_libraries(listener_node
+    ${SpeexDsp_LIBRARIES}
+    ${PortAudio_LIBRARIES}
+    ${ALSA_LIBRARIES}
     ${WHISPER_CPP_BUILD_DIR}/src/libwhisper.so.1
     ${WHISPER_CPP_BUILD_DIR}/ggml/src/libggml.so
     ${WHISPER_CPP_BUILD_DIR}/ggml/src/libggml-cpu.so

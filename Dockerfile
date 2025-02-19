@@ -62,6 +62,8 @@ RUN apt-get update && \
     g++ \
     sox \
     libasound2-dev \
+    libspeexdsp-dev \
+    portaudio19-dev \
     libsdl2-dev \
     python3-dev \
     python3-pip \
@@ -109,9 +111,11 @@ RUN git clone https://github.com/myshell-ai/MeloTTS.git && \
     python3 -m unidic download && \
     python3 -c "import nltk; nltk.download('averaged_perceptron_tagger_eng')"
 
-
+RUN echo "source /opt/ros/$ROS_DISTRO/setup.bash" >> ~/.bashrc
+RUN echo "source /ros2_ws/install/setup.bash" >> ~/.bashrc
+    
 # Final setup
 RUN useradd -m -G audio pulseuser
 RUN mkdir /root/ros2_ws/src/ -p
 WORKDIR /root/ros2_ws/
-CMD ["tail", "-f", "/dev/null"]
+CMD bash -c "source ~/.bashrc && ollama serve & exec tail -f /dev/null"

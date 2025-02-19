@@ -8,6 +8,53 @@
 #include <regex>
 #include <chrono>
 #include <cstdlib> 
+#include <portaudio.h>
+#include <speex/speex_echo.h>
+#include <speex/speex_preprocess.h>
+
+class EchoCanceller {
+public:
+    EchoCanceller(int sample_rate, int frame_size, int filter_length) :
+        frame_size_(frame_size) {
+        // Initialize Speex echo canceller
+        echo_state_ = speex_echo_state_init(frame_size, filter_length);
+        preprocess_state_ = speex_preprocess_state_init(frame_size, sample_rate);
+        
+        speex_echo_ctl(echo_state_, SPEEX_ECHO_SET_SAMPLING_RATE, &sample_rate);
+        speex_preprocess_ctl(preprocess_state_, SPEEX_PREPROCESS_SET_ECHO_STATE, echo_state_);
+    }
+
+    void process(const float* mic_input, const float* speaker_output, float* out, int frames) {
+        // Convert float arrays to spx_int16_t
+        std::vector<spx_int16_t> mic_int(frames);
+        std::vector<spx_int16_t> spk_int(frames);
+        std::vector<spx_int16_t> out_int(frames);
+        
+        // Convert float [-1,1] to int16
+        for(int i=0; i<frames; i++) {
+            mic_int[i] = static_cast<spx_int16_t>(mic_input[i] * 32767.0f);
+            spk_int[i] = static_cast<spx_int16_t>(speaker_output[i] * 32767.0f);
+        }
+        
+        speex_echo_cancellation(echo_state_, mic_int.data(), spk_int.data(), out_int.data());
+        speex_preprocess_run(preprocess_state_, out_int.data());
+        
+        // Convert back to float
+        for(int i=0; i<frames; i++) {
+            out[i] = out_int[i] / 32768.0f;
+        }
+    }
+    
+    ~EchoCanceller() {
+        speex_echo_state_destroy(echo_state_);
+        speex_preprocess_state_destroy(preprocess_state_);
+    }
+
+private:
+    SpeexEchoState* echo_state_;
+    SpeexPreprocessState* preprocess_state_;
+    int frame_size_;
+};
 
 class WhisperNode : public rclcpp::Node {
 private:
@@ -16,6 +63,65 @@ private:
     std::atomic<bool> is_running_{true};
     FILE* whisper_pipe_{nullptr};
     std::thread whisper_thread_;
+
+    // Audio processing members
+    PaStream* audio_stream_;
+    std::unique_ptr<EchoCanceller> echo_canceller_;
+    std::mutex audio_mutex_;
+    std::vector<float> system_audio_buffer_;
+    
+    // New method for audio capture and processing
+    void setupAudioCapture() {
+        Pa_Initialize();
+        
+        PaStreamParameters input_params, ref_params;
+        input_params.device = Pa_GetDefaultInputDevice();
+        input_params.channelCount = 1;
+        input_params.sampleFormat = paFloat32;
+        input_params.suggestedLatency = Pa_GetDeviceInfo(input_params.device)->defaultLowInputLatency;
+        input_params.hostApiSpecificStreamInfo = nullptr;
+
+        // System output (loopback) device
+        ref_params.device = Pa_GetDefaultOutputDevice(); 
+        ref_params.channelCount = 1;
+        ref_params.sampleFormat = paFloat32;
+        ref_params.suggestedLatency = Pa_GetDeviceInfo(ref_params.device)->defaultLowOutputLatency;
+        ref_params.hostApiSpecificStreamInfo = nullptr;
+
+        // Initialize echo canceller (using Speex or WebRTC implementation)
+        echo_canceller_ = std::make_unique<EchoCanceller>(16000, 1024, 10);
+
+        Pa_OpenStream(&audio_stream_,
+                        &input_params,
+                        &ref_params,
+                        16000,
+                        1024,
+                        paClipOff,
+                        [](const void* input, void* output,
+                        unsigned long frame_count,
+                        const PaStreamCallbackTimeInfo* time_info,
+                        PaStreamCallbackFlags status_flags,
+                        void* user_data) {
+                            return static_cast<WhisperNode*>(user_data)->audioCallback(
+                                static_cast<const float*>(input), frame_count);
+                        },
+                        this);
+
+        Pa_StartStream(audio_stream_);
+    }
+
+    int audioCallback(const float* input, unsigned long frame_count) {
+        std::lock_guard<std::mutex> lock(audio_mutex_);
+        
+        // Process audio through echo canceller
+        std::vector<float> processed_audio(frame_count);
+        echo_canceller_->process(input, system_audio_buffer_.data(), processed_audio.data(), frame_count);
+        
+        // Write processed audio to whisper-stream via pipe
+        fwrite(processed_audio.data(), sizeof(float), frame_count, whisper_pipe_);
+        
+        return paContinue;
+    }
 
     void playSound(bool listening) {
         if (listening) {
@@ -31,10 +137,12 @@ private:
         auto msg = std_msgs::msg::Bool();
         msg.data = state;
         listening_pub_->publish(msg);
-        playSound(state);
+        // playSound(state);
     }
 
     void processWhisperStream() {
+        setupAudioCapture();  // Initialize audio capture
+
         const char* model_env = std::getenv("WHISPER_MODEL");
         if (!model_env) {
             RCLCPP_ERROR(this->get_logger(), "MODEL environment variable not set");
@@ -119,7 +227,7 @@ private:
             }
             else {
                 if(start_listening == false) {
-                    playSound(1);
+                    // playSound(1);
                     start_listening = true;
                 }
             }
@@ -161,6 +269,14 @@ public:
     }
 
     ~WhisperNode() {
+        // Clean up audio resources
+        if (audio_stream_) {
+            Pa_StopStream(audio_stream_);
+            Pa_CloseStream(audio_stream_);
+        }
+        Pa_Terminate();
+        
+        // Clean up whisper stream resources
         is_running_ = false;
         if (whisper_pipe_) {
             pclose(whisper_pipe_);
